@@ -109,3 +109,61 @@ def test_graph_returns_clarification_when_required_tool_id_is_missing() -> None:
     result = graph.invoke(ticket.model_dump())
     assert result["final_result"].decision == NextAction.needs_clarification
     assert "transaction ID" in result["final_result"].customer_response
+
+
+def test_graph_handles_unknown_tool_as_clarification() -> None:
+    class UnknownToolLLM(FakeLLM):
+        def generate_structured(self, prompt: str, schema, temperature: float = 0.1):
+            if schema is InvestigationPlan:
+                return InvestigationPlan(
+                    rationale="Try order lookup.",
+                    required_tools=["get_order_details"],
+                    tool_arguments={},
+                )
+            return super().generate_structured(prompt, schema, temperature)
+
+    registry = ToolRegistry()
+    graph = build_support_graph(settings=None, llm_client=UnknownToolLLM(), retriever=FakeRetriever(), tool_registry=registry)
+    ticket = SupportTicketInput(ticket_id="T-101", raw_user_message="Order pending")
+    result = graph.invoke(ticket.model_dump())
+    assert result["final_result"].decision == NextAction.needs_clarification
+
+
+def test_graph_fetches_user_context_before_order_clarification() -> None:
+    class OrderClarificationLLM(FakeLLM):
+        def generate_structured(self, prompt: str, schema, temperature: float = 0.1):
+            if schema is InvestigationPlan:
+                return InvestigationPlan(
+                    rationale="Need order lookup.",
+                    required_tools=["get_order_details"],
+                    tool_arguments={},
+                )
+            return super().generate_structured(prompt, schema, temperature)
+
+    registry = ToolRegistry()
+    registry.register(
+        "get_order_details",
+        lambda order_id: ToolResult(name="get_order_details", success=True, payload={"order_details": {"id": order_id}}),
+    )
+    registry.register(
+        "search_related_orders",
+        lambda user_id: ToolResult(
+            name="search_related_orders",
+            success=True,
+            payload={"related_orders": [{"order_number": "ORD-1001"}]},
+        ),
+    )
+    registry.register(
+        "get_user_enquiries",
+        lambda user_id, active_only=True: ToolResult(
+            name="get_user_enquiries",
+            success=True,
+            payload={"user_enquiries": [{"order_number": "ENQ-2001"}]},
+        ),
+    )
+    graph = build_support_graph(settings=None, llm_client=OrderClarificationLLM(), retriever=FakeRetriever(), tool_registry=registry)
+    ticket = SupportTicketInput(ticket_id="T-102", raw_user_message="Order pending", user_id="U-2")
+    result = graph.invoke(ticket.model_dump())
+    assert result["facts"]["related_orders"][0]["order_number"] == "ORD-1001"
+    assert result["final_result"].decision == NextAction.needs_clarification
+    assert "ORD-1001" in result["final_result"].customer_response

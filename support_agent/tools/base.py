@@ -20,6 +20,9 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return sorted(self._tools.keys())
 
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools
+
     def required_parameters(self, name: str) -> list[str]:
         signature = inspect.signature(self._tools[name])
         required: list[str] = []

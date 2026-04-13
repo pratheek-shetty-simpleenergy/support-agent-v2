@@ -15,13 +15,24 @@ class PineconeRetriever:
         self.index = build_pinecone_index(settings)
 
     def retrieve(self, normalized_issue: str) -> dict[str, Any]:
+        if self.index is None:
+            return {
+                "matches": [],
+                "formatted_context": "Retrieval unavailable. Continuing without Pinecone context.",
+            }
         vector = self.embedder.embed(normalized_issue)
-        response = self.index.query(
-            namespace=self.settings.pinecone_namespace,
-            vector=vector,
-            top_k=self.settings.pinecone_top_k,
-            include_metadata=True,
-        )
+        try:
+            response = self.index.query(
+                namespace=self.settings.pinecone_namespace,
+                vector=vector,
+                top_k=self.settings.pinecone_top_k,
+                include_metadata=True,
+            )
+        except Exception:
+            return {
+                "matches": [],
+                "formatted_context": "Retrieval unavailable. Continuing without Pinecone context.",
+            }
         matches = [self._serialize_match(match) for match in response.get("matches", [])]
         return {
             "matches": matches,

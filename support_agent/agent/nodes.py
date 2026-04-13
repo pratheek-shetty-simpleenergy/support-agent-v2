@@ -11,7 +11,7 @@ from support_agent.llm.prompts import (
     build_investigation_plan_prompt,
     build_normalize_prompt,
 )
-from support_agent.schemas.agent import AgentDecision, AgentResult, InvestigationPlan
+from support_agent.schemas.agent import AgentDecision, AgentResult, InvestigationPlan, NextAction
 from support_agent.tools.base import ToolRegistry
 
 
@@ -80,11 +80,34 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
     for tool_name in plan.required_tools:
         arguments = dict(plan.tool_arguments.get(tool_name, {}))
         arguments = _hydrate_tool_arguments(state, arguments)
+        if not deps.tool_registry.has_tool(tool_name):
+            clarification_requests.append(
+                {
+                    "tool_name": tool_name,
+                    "missing_arguments": [],
+                    "reason": "unknown_tool",
+                }
+            )
+            continue
         missing_arguments = [
             parameter
             for parameter in deps.tool_registry.required_parameters(tool_name)
             if arguments.get(parameter) in (None, "")
         ]
+        if missing_arguments:
+            facts, raw_results = _run_user_context_fallbacks(
+                tool_name=tool_name,
+                state=state,
+                deps=deps,
+                facts=facts,
+                raw_results=raw_results,
+            )
+            arguments = _hydrate_tool_arguments(state, arguments)
+            missing_arguments = [
+                parameter
+                for parameter in deps.tool_registry.required_parameters(tool_name)
+                if arguments.get(parameter) in (None, "")
+            ]
         if missing_arguments:
             clarification_requests.append(
                 {
@@ -136,14 +159,26 @@ def finalize_response(state: AgentState, deps: NodeDependencies) -> AgentState:
 
 def _extract_summary(raw_text: str) -> str:
     stripped = raw_text.strip()
-    if stripped.startswith("{"):
-        try:
-            import json
+    try:
+        from support_agent.llm.parser import _extract_json_object
+        import json
 
-            payload = json.loads(stripped)
-            return str(payload["normalized_issue_summary"])
-        except Exception:
-            pass
+        json_fragment = _extract_json_object(stripped)
+        if json_fragment is not None:
+            payload = json.loads(json_fragment)
+            if "normalized_issue_summary" in payload:
+                return str(payload["normalized_issue_summary"]).strip()
+    except Exception:
+        pass
+
+    marker = "Normalized Issue Summary:"
+    if marker.lower() in stripped.lower():
+        import re
+
+        match = re.search(r"Normalized Issue Summary:\s*(.+)", stripped, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            first_line = match.group(1).strip().splitlines()[0]
+            return first_line.strip("* ").strip()
     return stripped
 
 
@@ -194,6 +229,37 @@ def _needs_payment_reference_clarification(required_tools: list[str], facts: dic
     return not has_payment_result and (has_orders or has_enquiries)
 
 
+def _run_user_context_fallbacks(
+    *,
+    tool_name: str,
+    state: AgentState,
+    deps: NodeDependencies,
+    facts: dict[str, Any],
+    raw_results: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    user_id = state.get("user_id")
+    if not user_id:
+        return facts, raw_results
+
+    fallback_tools: list[str] = []
+    if tool_name in {"get_order_details", "get_booking_details"}:
+        fallback_tools = ["search_related_orders", "get_user_enquiries"]
+    elif tool_name == "get_payment_status":
+        fallback_tools = ["search_related_orders", "get_user_enquiries"]
+
+    for fallback_tool in fallback_tools:
+        if fallback_tool == "search_related_orders" and facts.get("related_orders") is not None:
+            continue
+        if fallback_tool == "get_user_enquiries" and facts.get("user_enquiries") is not None:
+            continue
+        if not deps.tool_registry.has_tool(fallback_tool):
+            continue
+        result = deps.tool_registry.run(fallback_tool, {"user_id": user_id})
+        raw_results.append(result.model_dump())
+        facts.update(result.payload)
+    return facts, raw_results
+
+
 def _build_clarification_result(state: AgentState, clarification_requests: list[dict[str, Any]]) -> AgentResult:
     missing_arguments = sorted(
         {
@@ -203,10 +269,16 @@ def _build_clarification_result(state: AgentState, clarification_requests: list[
         }
     )
     clarification_lines: list[str] = []
+    related_orders = state.get("facts", {}).get("related_orders", [])
+    user_enquiries = state.get("facts", {}).get("user_enquiries", [])
     if "payment_id" in missing_arguments:
         clarification_lines.append("Please share your UTR number or transaction ID so I can verify the payment.")
     if "order_id" in missing_arguments:
-        clarification_lines.append("Please share your order ID or order number.")
+        order_hint = _build_order_confirmation_hint(related_orders, user_enquiries)
+        if order_hint:
+            clarification_lines.append(order_hint)
+        else:
+            clarification_lines.append("Please share your order ID or order number.")
     if "ticket_id" in missing_arguments:
         clarification_lines.append("Please share the ticket ID or ticket code.")
 
@@ -243,3 +315,24 @@ def _dedupe_clarification_requests(requests: list[dict[str, Any]]) -> list[dict[
         seen.add(key)
         deduped.append(request)
     return deduped
+
+
+def _build_order_confirmation_hint(related_orders: list[dict[str, Any]], user_enquiries: list[dict[str, Any]]) -> str:
+    order_numbers = [
+        str(item.get("order_number"))
+        for item in related_orders
+        if isinstance(item, dict) and item.get("order_number")
+    ]
+    enquiry_numbers = [
+        str(item.get("order_number"))
+        for item in user_enquiries
+        if isinstance(item, dict) and item.get("order_number")
+    ]
+    candidates = []
+    for number in order_numbers + enquiry_numbers:
+        if number not in candidates:
+            candidates.append(number)
+    if not candidates:
+        return ""
+    preview = ", ".join(candidates[:5])
+    return f"I found these likely order numbers for your account: {preview}. Please confirm the correct order number."

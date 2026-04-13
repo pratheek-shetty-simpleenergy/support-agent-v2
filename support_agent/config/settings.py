@@ -43,21 +43,23 @@ class Settings(BaseSettings):
                 catalog[key].database_name = database_name
         return catalog
 
-    def business_database_urls(self) -> dict[str, str]:
+    def business_database_configs(self) -> dict[str, dict[str, str | None]]:
         if not self.database_server_url:
             return {}
 
         parsed = urlparse(_normalize_database_url(self.database_server_url))
         query_pairs = dict(parse_qsl(parsed.query))
-        urls: dict[str, str] = {}
+        schema_name = query_pairs.pop("schema", None)
+        configs: dict[str, dict[str, str | None]] = {}
         for key, database_name in self.business_db_names.items():
-            urls[key] = urlunparse(
+            url = urlunparse(
                 parsed._replace(
                     path=f"/{database_name}",
                     query=urlencode(query_pairs),
                 )
             )
-        return urls
+            configs[key] = {"url": url, "schema_name": schema_name}
+        return configs
 
     def require_pinecone(self) -> None:
         if not self.pinecone_api_key or not self.pinecone_index:

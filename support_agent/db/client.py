@@ -15,8 +15,12 @@ class BusinessDbManager:
         settings.require_database()
         self.settings = settings
         self.engines: dict[str, Engine] = {
-            key: create_engine(url, pool_pre_ping=True)
-            for key, url in settings.business_database_urls().items()
+            key: create_engine(
+                str(config["url"]),
+                pool_pre_ping=True,
+                connect_args=_build_connect_args(config.get("schema_name")),
+            )
+            for key, config in settings.business_database_configs().items()
         }
 
     @contextmanager
@@ -39,3 +43,9 @@ class BusinessDbManager:
 
     def available_databases(self) -> Iterable[str]:
         return self.engines.keys()
+
+
+def _build_connect_args(schema_name: str | None) -> dict[str, str]:
+    if not schema_name:
+        return {}
+    return {"options": f"-csearch_path={schema_name}"}
