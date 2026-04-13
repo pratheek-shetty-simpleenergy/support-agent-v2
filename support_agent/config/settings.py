@@ -16,13 +16,30 @@ class Settings(BaseSettings):
     ollama_host: str = Field(default="http://127.0.0.1:11434", alias="OLLAMA_HOST")
     ollama_model: str = Field(default="llama3", alias="OLLAMA_MODEL")
     ollama_embedding_model: str = Field(default="llama3", alias="OLLAMA_EMBEDDING_MODEL")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
+    openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
+    openai_embedding_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBEDDING_MODEL")
 
     pinecone_api_key: str | None = Field(default=None, alias="PINECONE_API_KEY")
     pinecone_index: str | None = Field(default=None, alias="PINECONE_INDEX")
     pinecone_namespace: str = Field(default="support", alias="PINECONE_NAMESPACE")
     pinecone_top_k: int = Field(default=5, alias="PINECONE_TOP_K")
+    pinecone_required: bool = Field(default=False, alias="PINECONE_REQUIRED")
+
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    redact_pii_in_logs: bool = Field(default=True, alias="REDACT_PII_IN_LOGS")
+
+    dependency_retry_attempts: int = Field(default=2, alias="DEPENDENCY_RETRY_ATTEMPTS")
+    dependency_retry_backoff_seconds: float = Field(default=0.25, alias="DEPENDENCY_RETRY_BACKOFF_SECONDS")
+    ollama_timeout_seconds: int = Field(default=60, alias="OLLAMA_TIMEOUT_SECONDS")
 
     database_server_url: str | None = Field(default=None, alias="DATABASE_SERVER_URL")
+    db_connect_timeout_seconds: int = Field(default=10, alias="DB_CONNECT_TIMEOUT_SECONDS")
+    db_statement_timeout_ms: int = Field(default=10000, alias="DB_STATEMENT_TIMEOUT_MS")
+    db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=5, alias="DB_MAX_OVERFLOW")
+    db_pool_recycle_seconds: int = Field(default=1800, alias="DB_POOL_RECYCLE_SECONDS")
     business_db_names: dict[str, str] = Field(
         default_factory=lambda: {
             "dms_stage": "dms-stage",
@@ -68,6 +85,18 @@ class Settings(BaseSettings):
     def require_database(self) -> None:
         if not self.database_server_url:
             raise ValueError("DATABASE_SERVER_URL is required for business DB-backed investigation tools.")
+
+    def require_llm(self) -> None:
+        provider = self.llm_provider.lower()
+        if provider == "ollama":
+            if not self.ollama_host or not self.ollama_model:
+                raise ValueError("Ollama configuration is incomplete. Set OLLAMA_HOST and OLLAMA_MODEL.")
+            return
+        if provider == "openai":
+            if not self.openai_api_key or not self.openai_model:
+                raise ValueError("OpenAI configuration is incomplete. Set OPENAI_API_KEY and OPENAI_MODEL.")
+            return
+        raise ValueError(f"Unsupported LLM_PROVIDER: {self.llm_provider}")
 
     @classmethod
     def settings_customise_sources(

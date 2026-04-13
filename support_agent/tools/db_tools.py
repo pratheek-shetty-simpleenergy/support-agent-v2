@@ -12,6 +12,10 @@ def build_business_db_tools(repository: BusinessDbRepository) -> ToolRegistry:
         payload = repository.get_user_profile(user_id=user_id)
         return ToolResult(name="get_user_profile", success=payload is not None, payload={"user_profile": payload or {}})
 
+    def get_user_profile_by_mobile(mobile: str) -> ToolResult:
+        payload = repository.get_user_profile_by_mobile(mobile=mobile)
+        return ToolResult(name="get_user_profile_by_mobile", success=payload is not None, payload={"user_profile": payload or {}})
+
     def get_booking_details(booking_id: str) -> ToolResult:
         payload = repository.get_booking_details(booking_id=booking_id)
         return ToolResult(name="get_booking_details", success=payload is not None, payload={"booking_details": payload or {}})
@@ -65,6 +69,7 @@ def build_business_db_tools(repository: BusinessDbRepository) -> ToolRegistry:
         return ToolResult(name="get_test_ride_details", success=True, payload={"test_ride_details": payload})
 
     registry.register("get_user_profile", get_user_profile)
+    registry.register("get_user_profile_by_mobile", get_user_profile_by_mobile)
     registry.register("get_booking_details", get_booking_details)
     registry.register("get_order_details", get_order_details)
     registry.register("get_payment_status", get_payment_status)

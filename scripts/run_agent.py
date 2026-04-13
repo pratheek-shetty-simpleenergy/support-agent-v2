@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from support_agent.runtime import configure_logging, redact_for_logging
 from support_agent.schemas.ticket import SupportTicketInput
 from support_agent.services.bootstrap import build_application
 
@@ -18,6 +19,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    configure_logging()
     ticket = SupportTicketInput.model_validate_json(args.ticket_file.read_text())
     app = build_application()
     last_state: dict[str, Any] | None = None
@@ -62,7 +64,7 @@ def _format_node_update(node_name: str, node_state: Any) -> str:
     if node_name == "run_tools":
         results = node_state.get("tool_results", [])
         tool_names = [item.get("name") for item in results if isinstance(item, dict)]
-        facts = node_state.get("facts", {})
+        facts = redact_for_logging(node_state.get("facts", {}))
         clarifications = node_state.get("clarification_requests", [])
         return (
             f"[{node_name}] executed_tools={','.join(tool_names) or 'none'} "
@@ -71,8 +73,11 @@ def _format_node_update(node_name: str, node_state: Any) -> str:
         )
     if node_name == "finalize":
         result = node_state.get("final_result")
+        trace = node_state.get("investigation_trace", [])
+        trace_tail = trace[-1] if trace else None
         if result is not None:
-            return f"[{node_name}] decision={result.decision} confidence={result.confidence}"
+            suffix = f" trace={trace_tail}" if trace_tail else ""
+            return f"[{node_name}] decision={result.decision} confidence={result.confidence}{suffix}"
     return f"[{node_name}] completed"
 
 

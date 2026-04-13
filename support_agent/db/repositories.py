@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from support_agent.config import Settings
 from support_agent.db.catalog import TableBinding
 from support_agent.db.client import BusinessDbManager
@@ -33,9 +35,32 @@ class BusinessDbRepository:
         """
         return self.db.fetch_one(sql, {"user_id": user_id}, database_key="users_stage")
 
+    def get_user_profile_by_mobile(self, mobile: str) -> dict | None:
+        binding = self._table("users_stage", "users")
+        normalized_mobile = _normalize_mobile_number(mobile)
+        sql = f"""
+        SELECT
+          "id" AS id,
+          "name" AS name,
+          "mobile" AS mobile,
+          "email" AS email,
+          "primaryVin" AS primary_vin,
+          "profilePicture" AS profile_picture,
+          "signupSource" AS signup_source,
+          "emailVerified" AS email_verified,
+          "whatsappConsent" AS whatsapp_consent,
+          "userMetadata" AS user_metadata,
+          "createdAt" AS created_at,
+          "updatedAt" AS updated_at
+        FROM {binding.schema_name}.{binding.table}
+        WHERE "mobile" = :mobile
+        LIMIT 1
+        """
+        return self.db.fetch_one(sql, {"mobile": normalized_mobile}, database_key="users_stage")
+
     def get_booking_details(self, booking_id: str) -> dict | None:
         binding = self._table("orders_stage", "orders")
-        sql = f"""
+        select_sql = f"""
         SELECT
           "id" AS id,
           "orderNumber" AS order_number,
@@ -51,15 +76,16 @@ class BusinessDbRepository:
           "createdAt" AS created_at,
           "updatedAt" AS updated_at
         FROM {binding.schema_name}.{binding.table}
-        WHERE "id" = :booking_id
-           OR "orderNumber" = :booking_id
-        LIMIT 1
         """
+        if _is_uuid_like(booking_id):
+            sql = f'{select_sql} WHERE "id" = :booking_id LIMIT 1'
+        else:
+            sql = f'{select_sql} WHERE "orderNumber" = :booking_id LIMIT 1'
         return self.db.fetch_one(sql, {"booking_id": booking_id}, database_key="orders_stage")
 
     def get_payment_status(self, payment_id: str) -> dict | None:
         binding = self._table("orders_stage", "transactions")
-        sql = f"""
+        select_sql = f"""
         SELECT
           "id" AS id,
           "orderId" AS order_id,
@@ -70,15 +96,16 @@ class BusinessDbRepository:
           "createdAt" AS created_at,
           "updatedAt" AS updated_at
         FROM {binding.schema_name}.{binding.table}
-        WHERE "id" = :payment_id
-           OR "transactionId" = :payment_id
-        LIMIT 1
         """
+        if _is_uuid_like(payment_id):
+            sql = f'{select_sql} WHERE "id" = :payment_id LIMIT 1'
+        else:
+            sql = f'{select_sql} WHERE "transactionId" = :payment_id LIMIT 1'
         return self.db.fetch_one(sql, {"payment_id": payment_id}, database_key="orders_stage")
 
     def get_vehicle_details(self, vehicle_id: str) -> dict | None:
         binding = self._table("ownership_stage", "ownerships")
-        sql = f"""
+        select_sql = f"""
         SELECT
           "id" AS id,
           "userId" AS user_id,
@@ -91,11 +118,11 @@ class BusinessDbRepository:
           "createdAt" AS created_at,
           "updatedAt" AS updated_at
         FROM {binding.schema_name}.{binding.table}
-        WHERE "id" = :vehicle_id
-           OR "vin" = :vehicle_id
-           OR "registrationNumber" = :vehicle_id
-        LIMIT 1
         """
+        if _is_uuid_like(vehicle_id):
+            sql = f'{select_sql} WHERE "id" = :vehicle_id LIMIT 1'
+        else:
+            sql = f'{select_sql} WHERE "vin" = :vehicle_id OR "registrationNumber" = :vehicle_id LIMIT 1'
         return self.db.fetch_one(sql, {"vehicle_id": vehicle_id}, database_key="ownership_stage")
 
     def get_ticket_history(self, user_id: str) -> list[dict]:
@@ -398,3 +425,18 @@ class BusinessDbRepository:
 
     def _table(self, database_key: str, table_key: str) -> TableBinding:
         return self.catalog[database_key].tables[table_key]
+
+
+def _normalize_mobile_number(mobile: str) -> str:
+    digits = "".join(character for character in mobile if character.isdigit())
+    if digits.startswith("91") and len(digits) == 12:
+        return f"+{digits}"
+    if len(digits) == 10:
+        return f"+91{digits}"
+    if mobile.startswith("+"):
+        return mobile
+    return mobile
+
+
+def _is_uuid_like(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value))

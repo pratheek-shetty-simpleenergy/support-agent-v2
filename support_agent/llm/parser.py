@@ -3,6 +3,7 @@ import re
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
+from support_agent.runtime.errors import InvalidModelOutputError
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -31,7 +32,7 @@ def parse_json_model(raw_text: str, model_type: type[T]) -> T:
     try:
         return model_type.model_validate(payload)
     except ValidationError as exc:
-        raise ValueError(f"Model output failed schema validation: {payload}") from exc
+        raise InvalidModelOutputError(f"Model output failed schema validation: {payload}") from exc
 
 
 def _extract_key_value_payload(text: str) -> dict | None:

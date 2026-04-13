@@ -6,6 +6,7 @@ from support_agent.config import Settings
 from support_agent.retrieval.embedder import OllamaEmbeddingAdapter
 from support_agent.retrieval.formatter import format_match_context
 from support_agent.retrieval.pinecone_client import build_pinecone_index
+from support_agent.runtime.errors import SupportAgentError
 
 
 class PineconeRetriever:
@@ -20,7 +21,13 @@ class PineconeRetriever:
                 "matches": [],
                 "formatted_context": "Retrieval unavailable. Continuing without Pinecone context.",
             }
-        vector = self.embedder.embed(normalized_issue)
+        try:
+            vector = self.embedder.embed(normalized_issue)
+        except SupportAgentError:
+            return {
+                "matches": [],
+                "formatted_context": "Retrieval unavailable. Continuing without Pinecone context.",
+            }
         try:
             response = self.index.query(
                 namespace=self.settings.pinecone_namespace,
@@ -38,6 +45,15 @@ class PineconeRetriever:
             "matches": matches,
             "formatted_context": format_match_context(matches),
         }
+
+    def healthcheck(self) -> dict[str, Any]:
+        if self.index is None:
+            return {"status": "degraded", "provider": "pinecone", "message": "Pinecone unavailable or optional."}
+        try:
+            self.index.describe_index_stats()
+            return {"status": "ok", "provider": "pinecone", "index": self.settings.pinecone_index}
+        except Exception as exc:
+            return {"status": "error", "provider": "pinecone", "error": str(exc)}
 
     @staticmethod
     def _serialize_match(match: Any) -> dict[str, Any]:

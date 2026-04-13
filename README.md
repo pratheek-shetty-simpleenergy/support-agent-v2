@@ -53,6 +53,22 @@ PINECONE_INDEX=ticket-agent-index
 DATABASE_SERVER_URL=postgres://user:pass@host:5432?schema=public
 ```
 
+Recommended production-oriented variables:
+
+```bash
+LOG_LEVEL=INFO
+REDACT_PII_IN_LOGS=true
+DEPENDENCY_RETRY_ATTEMPTS=2
+DEPENDENCY_RETRY_BACKOFF_SECONDS=0.25
+OLLAMA_TIMEOUT_SECONDS=60
+DB_CONNECT_TIMEOUT_SECONDS=10
+DB_STATEMENT_TIMEOUT_MS=10000
+DB_POOL_SIZE=5
+DB_MAX_OVERFLOW=5
+DB_POOL_RECYCLE_SECONDS=1800
+PINECONE_REQUIRED=false
+```
+
 Business database names:
 
 ```bash
@@ -87,6 +103,12 @@ Use the included example ticket or provide your own JSON payload matching `Suppo
 python scripts/run_agent.py examples/sample_ticket.json
 ```
 
+Run a dependency healthcheck:
+
+```bash
+python scripts/healthcheck.py
+```
+
 ## Output Shape
 
 The graph returns a structured `AgentResult`:
@@ -107,13 +129,21 @@ The graph returns a structured `AgentResult`:
 
 ## Notes For Production Hardening
 
-This repo is intentionally simple, but the foundation is ready for the next pass:
+This repo now includes a production-hardening pass:
 
-- replace prompt-only JSON steering with stricter schema-enforced local structured decoding if needed
-- refine repositories to match your real schemas
-- add observability around node timings and tool usage
-- add retries and circuit handling around Ollama, Pinecone, and DB access
-- add more graph branches for clarification loops and escalation paths
+- typed runtime errors for dependency, tool, and model-output failures
+- safe tool execution and fallback escalation when investigation tools fail
+- bounded retries for Ollama requests
+- DB session safety controls through read-only mode and statement timeout
+- healthcheck entrypoint for Ollama, DB, and Pinecone
+- redacted CLI logging for sensitive fields
+
+Remaining work for a fuller production rollout:
+
+- add centralized structured log sinks and metrics export
+- add CI, linting, and type checking
+- add deeper integration tests against live dependency contracts
+- benchmark local models on your real support-ticket set
 
 ## Tests
 

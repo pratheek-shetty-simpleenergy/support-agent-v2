@@ -1,5 +1,15 @@
 {
   "ticket_id": "TCK-497091",
-  "raw_user_message": "i am not able to see my order details",
-  "moobile":"9480300096"
+  "raw_user_message": "Something seems wrong with my account. The app is not working properly and I cannot tell if this is an app issue, an order issue, or something related to my vehicle.",
+  "conversation_history": [
+    {
+      "role": "customer",
+      "content": "The app opens sometimes but then gets stuck and does not let me continue."
+    },
+    {
+      "role": "customer",
+      "content": "At one point it said no vehicle is attached to my phone number, but I also cannot see what is happening with my order."
+    }
+  ],
+  "mobile": "9480300096"
 }

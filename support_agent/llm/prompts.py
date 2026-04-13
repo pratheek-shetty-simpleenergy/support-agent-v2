@@ -66,6 +66,11 @@ Available tools:
 {", ".join(available_tools)}
 
 Choose only tools that help establish facts. Do not invent identifiers.
+Business chain to reason over:
+- mobile -> user in users DB
+- user_id -> enquiry records in orders DB
+- successful payment moves flow from Enquiry to Order
+- after delivery, ownership records link user_id and order_id to VIN
 If a payment-specific tool needs a transaction or payment identifier and none is available, prefer user-level lookup tools first such as order, enquiry, ticket, or profile tools.
 For pending-order issues:
 - if only user_id is available, use user/order enquiry lookups first
@@ -110,8 +115,10 @@ Return JSON with:
 - issue_category
 - problem_type
 - decision (resolved, needs_clarification, escalate, pending)
-- customer_response
+- customer_response: non-empty string for the customer
 - internal_summary
-- facts
-- confidence
+- facts: object/dictionary, not a list
+- confidence: decimal number between 0 and 1
+Use the investigated facts already provided. Do not invent new IDs, statuses, or facts.
+Never return null for customer_response.
 """.strip()

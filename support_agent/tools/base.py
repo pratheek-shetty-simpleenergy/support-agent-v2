@@ -5,6 +5,7 @@ import inspect
 from typing import Any
 
 from support_agent.schemas.tool import ToolResult
+from support_agent.runtime.errors import SupportAgentError, ToolExecutionError
 
 
 ToolFunction = Callable[..., ToolResult]
@@ -40,3 +41,12 @@ class ToolRegistry:
             if key in signature.parameters
         }
         return tool(**accepted_arguments)
+
+    def run_safe(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        try:
+            return self.run(name, arguments)
+        except SupportAgentError as exc:
+            return ToolResult(name=name, success=False, payload={}, error=f"{exc.error_type}: {exc}")
+        except Exception as exc:
+            wrapped = ToolExecutionError(str(exc))
+            return ToolResult(name=name, success=False, payload={}, error=f"{wrapped.error_type}: {wrapped}")

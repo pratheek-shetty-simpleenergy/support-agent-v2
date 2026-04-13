@@ -35,3 +35,26 @@ def test_get_ticket_history_tool_returns_list_payload() -> None:
     result = tools.run("get_ticket_history", {"user_id": "user-1"})
     assert result.success is True
     assert len(result.payload["ticket_history"]) == 2
+
+
+def test_get_user_profile_by_mobile_prepends_country_code() -> None:
+    repository = build_repository()
+    repository.get_user_profile_by_mobile("9480300096")
+    _, params, database_key = repository.db.last_call
+    assert params["mobile"] == "+919480300096"
+    assert database_key == "users_stage"
+
+
+def test_get_booking_details_uses_uuid_lookup_for_uuid_input() -> None:
+    repository = build_repository()
+    repository.get_booking_details("3dfb661f-7756-4d06-9d72-a47093112c1a")
+    sql, _, _ = repository.db.last_call
+    assert '"id" = :booking_id' in sql
+    assert '"orderNumber" = :booking_id' not in sql
+
+
+def test_get_booking_details_uses_order_number_lookup_for_text_input() -> None:
+    repository = build_repository()
+    repository.get_booking_details("ORD-1001")
+    sql, _, _ = repository.db.last_call
+    assert '"orderNumber" = :booking_id' in sql
