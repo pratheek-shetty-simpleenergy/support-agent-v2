@@ -20,13 +20,17 @@ def build_business_db_tools(repository: BusinessDbRepository) -> ToolRegistry:
         payload = repository.get_booking_details(booking_id=booking_id)
         return ToolResult(name="get_booking_details", success=payload is not None, payload={"booking_details": payload or {}})
 
-    def get_order_details(order_id: str) -> ToolResult:
-        payload = repository.get_booking_details(booking_id=order_id)
+    def get_order_details(order_id: str | None = None, order_number: str | None = None) -> ToolResult:
+        payload = repository.get_order_details(order_id=order_id, order_number=order_number)
         return ToolResult(name="get_order_details", success=payload is not None, payload={"order_details": payload or {}})
 
     def get_payment_status(payment_id: str) -> ToolResult:
         payload = repository.get_payment_status(payment_id=payment_id)
         return ToolResult(name="get_payment_status", success=payload is not None, payload={"payment_status": payload or {}})
+
+    def get_order_payment_status(order_id: str) -> ToolResult:
+        payload = repository.get_order_payment_status(order_id=order_id)
+        return ToolResult(name="get_order_payment_status", success=payload is not None, payload={"payment_status": payload or {}})
 
     def get_vehicle_details(vehicle_id: str) -> ToolResult:
         payload = repository.get_vehicle_details(vehicle_id=vehicle_id)
@@ -73,6 +77,7 @@ def build_business_db_tools(repository: BusinessDbRepository) -> ToolRegistry:
     registry.register("get_booking_details", get_booking_details)
     registry.register("get_order_details", get_order_details)
     registry.register("get_payment_status", get_payment_status)
+    registry.register("get_order_payment_status", get_order_payment_status)
     registry.register("get_vehicle_details", get_vehicle_details)
     registry.register("get_ticket_history", get_ticket_history)
     registry.register("get_ticket_details", get_ticket_details)

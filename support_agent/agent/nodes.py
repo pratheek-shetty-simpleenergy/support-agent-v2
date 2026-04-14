@@ -136,11 +136,17 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
     completed_tools: set[str] = set()
 
     while tool_queue:
+        working_state.update(_propagate_identifiers_from_facts(working_state, facts))
         tool_name = tool_queue.pop(0)
         if tool_name in completed_tools:
             continue
         arguments = dict(plan.tool_arguments.get(tool_name, {}))
         arguments = _hydrate_tool_arguments(working_state, arguments)
+        if tool_name in {"get_order_details", "get_booking_details"} and arguments.get("order_number") in (None, "") and working_state.get("order_number"):
+            arguments["order_number"] = working_state["order_number"]
+        resolved_user_id = _resolve_user_id(working_state, facts)
+        if resolved_user_id and arguments.get("user_id") in (None, ""):
+            arguments["user_id"] = resolved_user_id
         if not deps.tool_registry.has_tool(tool_name):
             if tool_name not in planned_tools:
                 trace.append(f"Skipped optional follow-up tool {tool_name} because it is not registered.")
@@ -161,6 +167,10 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
             for parameter in deps.tool_registry.required_parameters(tool_name)
             if arguments.get(parameter) in (None, "")
         ]
+        if tool_name in {"get_order_details", "get_booking_details"} and not (
+            arguments.get("order_id") or arguments.get("order_number") or arguments.get("booking_id")
+        ):
+            missing_arguments = ["order_reference"]
         if missing_arguments:
             facts, raw_results, fallback_completed = _run_user_context_fallbacks(
                 tool_name=tool_name,
@@ -172,12 +182,21 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
             completed_tools.update(fallback_completed)
             working_state.update(_propagate_identifiers_from_facts(working_state, facts))
             arguments = _hydrate_tool_arguments(working_state, arguments)
+            if tool_name in {"get_order_details", "get_booking_details"} and arguments.get("order_number") in (None, "") and working_state.get("order_number"):
+                arguments["order_number"] = working_state["order_number"]
+            resolved_user_id = _resolve_user_id(working_state, facts)
+            if resolved_user_id and arguments.get("user_id") in (None, ""):
+                arguments["user_id"] = resolved_user_id
             trace = _append_tool_trace(trace, tool_name, facts, working_state)
             missing_arguments = [
                 parameter
                 for parameter in deps.tool_registry.required_parameters(tool_name)
                 if arguments.get(parameter) in (None, "")
             ]
+            if tool_name in {"get_order_details", "get_booking_details"} and not (
+                arguments.get("order_id") or arguments.get("order_number") or arguments.get("booking_id")
+            ):
+                missing_arguments = ["order_reference"]
         if missing_arguments and tool_name in {"get_order_details", "get_booking_details"}:
             if has_multiple_order_candidates(facts):
                 clarification_requests.append(
@@ -269,6 +288,7 @@ def finalize_response(state: AgentState, deps: NodeDependencies) -> AgentState:
     clarification_requests = state.get("clarification_requests", [])
     if clarification_requests:
         final = _build_clarification_result(state, clarification_requests)
+        final.facts = _prune_final_facts(state, state.get("facts", {}))
         return {
             "next_action": final.decision,
             "final_result": final,
@@ -276,6 +296,7 @@ def finalize_response(state: AgentState, deps: NodeDependencies) -> AgentState:
         }
     if state.get("tool_failures"):
         final = _build_fallback_final_result(state)
+        final.facts = _prune_final_facts(state, state.get("facts", {}))
         return {
             "next_action": final.decision,
             "final_result": final,
@@ -283,13 +304,24 @@ def finalize_response(state: AgentState, deps: NodeDependencies) -> AgentState:
         }
     deterministic_mobile_result = _build_mobile_vehicle_linkage_result(state)
     if deterministic_mobile_result is not None:
-        deterministic_mobile_result.facts = state.get("facts", {})
+        deterministic_mobile_result.facts = _prune_final_facts(state, state.get("facts", {}))
         return {
             "next_action": deterministic_mobile_result.decision,
             "final_result": deterministic_mobile_result,
             "investigation_trace": _append_trace(
                 state,
                 f"Finished with deterministic mobile linkage diagnosis: {deterministic_mobile_result.internal_summary}",
+            ),
+        }
+    deterministic_pending_order_result = _build_pending_order_result(state)
+    if deterministic_pending_order_result is not None:
+        deterministic_pending_order_result.facts = _prune_final_facts(state, state.get("facts", {}))
+        return {
+            "next_action": deterministic_pending_order_result.decision,
+            "final_result": deterministic_pending_order_result,
+            "investigation_trace": _append_trace(
+                state,
+                f"Finished with deterministic pending-order diagnosis: {deterministic_pending_order_result.internal_summary}",
             ),
         }
 
@@ -310,7 +342,7 @@ def finalize_response(state: AgentState, deps: NodeDependencies) -> AgentState:
     if not final.customer_response.strip():
         final = _build_fallback_final_result(state)
     final.ticket_id = state["ticket_id"]
-    final.facts = state.get("facts", {})
+    final.facts = _prune_final_facts(state, state.get("facts", {}))
     return {
         "next_action": final.decision,
         "final_result": final,
@@ -374,8 +406,8 @@ def _hydrate_tool_arguments(state: AgentState, arguments: dict[str, Any]) -> dic
                 arguments["payment_id"] = state[field]
             if field == "order_id" and arguments.get("order_id") is None:
                 arguments["order_id"] = state[field]
-            if field == "order_number" and arguments.get("order_id") is None:
-                arguments["order_id"] = state[field]
+            if field == "order_number" and arguments.get("order_number") is None:
+                arguments["order_number"] = state[field]
             if field == "vehicle_id" and arguments.get("vehicle_id") is None:
                 arguments["vehicle_id"] = state[field]
     return arguments
@@ -473,6 +505,8 @@ def _needs_order_candidate_clarification(
     facts: dict[str, Any],
     clarification_requests: list[dict[str, Any]],
 ) -> bool:
+    if state.get("order_number"):
+        return False
     if state.get("order_id"):
         return False
     if not has_multiple_order_candidates(facts):
@@ -552,7 +586,7 @@ def _build_clarification_result(state: AgentState, clarification_requests: list[
     user_enquiries = state.get("facts", {}).get("user_enquiries", [])
     if "payment_id" in missing_arguments:
         clarification_lines.append("Please share your UTR number or transaction ID so I can verify the payment.")
-    if "order_id" in missing_arguments:
+    if "order_id" in missing_arguments or "order_reference" in missing_arguments:
         order_hint = _build_order_confirmation_hint(related_orders, user_enquiries)
         if order_hint:
             clarification_lines.append(order_hint)
@@ -628,7 +662,7 @@ def _propagate_identifiers_from_facts(state: dict[str, Any], facts: dict[str, An
             updates["vehicle_id"] = user_profile["primary_vin"]
 
         user_metadata = user_profile.get("user_metadata", {})
-        if isinstance(user_metadata, dict) and not state.get("order_id"):
+        if isinstance(user_metadata, dict) and not state.get("order_id") and not state.get("order_number"):
             order_id = user_metadata.get("orderId") or user_metadata.get("order_id")
             if order_id:
                 updates["order_id"] = order_id
@@ -641,7 +675,7 @@ def _propagate_identifiers_from_facts(state: dict[str, Any], facts: dict[str, An
     order_details = facts.get("order_details", {})
     if isinstance(order_details, dict):
         if not state.get("order_id"):
-            order_id = order_details.get("id") or order_details.get("order_number")
+            order_id = order_details.get("id")
             if order_id:
                 updates["order_id"] = order_id
         if not state.get("user_id") and order_details.get("user_id"):
@@ -801,6 +835,151 @@ def _build_mobile_vehicle_linkage_result(state: AgentState) -> AgentResult | Non
             internal_summary="Ownership VIN and user primary VIN do not match.",
             facts=facts,
             confidence=0.86,
+        )
+
+    return None
+
+
+def _find_target_enquiry(state: AgentState, facts: dict[str, Any]) -> dict[str, Any]:
+    target_order_number = state.get("order_number")
+    enquiries = facts.get("user_enquiries", [])
+    if not isinstance(enquiries, list):
+        return {}
+    if target_order_number:
+        for enquiry in enquiries:
+            if isinstance(enquiry, dict) and enquiry.get("order_number") == target_order_number:
+                return enquiry
+    return {}
+
+
+def _find_target_related_order(state: AgentState, facts: dict[str, Any]) -> dict[str, Any]:
+    target_order_number = state.get("order_number")
+    related_orders = facts.get("related_orders", [])
+    if not isinstance(related_orders, list):
+        return {}
+    if target_order_number:
+        for order in related_orders:
+            if isinstance(order, dict) and order.get("order_number") == target_order_number:
+                return order
+    return {}
+
+
+def _prune_final_facts(state: AgentState, facts: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(facts, dict):
+        return {}
+
+    target_order_number = state.get("order_number")
+    target_order_id = state.get("order_id")
+    if not target_order_number and not target_order_id:
+        return facts
+
+    pruned = dict(facts)
+
+    related_orders = pruned.get("related_orders")
+    if isinstance(related_orders, list):
+        filtered_related_orders = [
+            order
+            for order in related_orders
+            if isinstance(order, dict)
+            and (
+                (target_order_id and order.get("id") == target_order_id)
+                or (target_order_number and order.get("order_number") == target_order_number)
+            )
+        ]
+        if filtered_related_orders:
+            pruned["related_orders"] = filtered_related_orders
+        else:
+            pruned.pop("related_orders", None)
+
+    user_enquiries = pruned.get("user_enquiries")
+    if isinstance(user_enquiries, list):
+        filtered_user_enquiries = [
+            enquiry
+            for enquiry in user_enquiries
+            if isinstance(enquiry, dict)
+            and (
+                (target_order_id and enquiry.get("id") == target_order_id)
+                or (target_order_number and enquiry.get("order_number") == target_order_number)
+            )
+        ]
+        if filtered_user_enquiries:
+            pruned["user_enquiries"] = filtered_user_enquiries
+        else:
+            pruned.pop("user_enquiries", None)
+
+    order_details = pruned.get("order_details")
+    if isinstance(order_details, dict):
+        order_matches = (
+            (target_order_id and order_details.get("id") == target_order_id)
+            or (target_order_number and order_details.get("order_number") == target_order_number)
+        )
+        if not order_matches:
+            pruned.pop("order_details", None)
+
+    payment_status = pruned.get("payment_status")
+    if isinstance(payment_status, dict) and target_order_id and payment_status.get("order_id") != target_order_id:
+        pruned.pop("payment_status", None)
+
+    return pruned
+
+
+def _build_pending_order_result(state: AgentState) -> AgentResult | None:
+    category = str(state.get("issue_category", "")).lower()
+    problem_type = str(state.get("problem_type", "")).lower()
+    if category not in {"payment", "booking", "delivery"} and "order" not in problem_type and "pending" not in problem_type:
+        return None
+
+    facts = state.get("facts", {})
+    target_order_number = state.get("order_number")
+    if not target_order_number:
+        return None
+
+    target_enquiry = _find_target_enquiry(state, facts)
+    target_related_order = _find_target_related_order(state, facts)
+    order_details = facts.get("order_details", {}) if isinstance(facts.get("order_details"), dict) else {}
+    payment_status = facts.get("payment_status", {}) if isinstance(facts.get("payment_status"), dict) else {}
+
+    if order_details and order_details.get("order_number") and order_details.get("order_number") != target_order_number:
+        order_details = {}
+    if payment_status and order_details and payment_status.get("order_id") and payment_status.get("order_id") != order_details.get("id"):
+        payment_status = {}
+
+    if target_enquiry and not target_related_order and not order_details:
+        payment_session_id = target_enquiry.get("payment_session_id")
+        message = (
+            f"I checked order number {target_order_number} and it is still an active enquiry in pending state. "
+            "I do not see a converted order or payment record against this enquiry yet."
+        )
+        if payment_session_id:
+            message += " If money was deducted from your end, please share the transaction ID or UTR number so we can verify the payment."
+        else:
+            message += " This usually means payment has not been completed yet."
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=message,
+            internal_summary="Target order number is still an active enquiry and no converted order/payment record was found.",
+            facts=facts,
+            confidence=0.92,
+        )
+
+    if order_details and not payment_status:
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=(
+                f"I checked order {target_order_number} and I do not see any payment recorded against it yet. "
+                "If money was deducted from your end, please share the transaction ID or UTR number so we can verify the payment."
+            ),
+            internal_summary="Target order exists but no transaction record was found for its order id.",
+            facts=facts,
+            confidence=0.9,
         )
 
     return None

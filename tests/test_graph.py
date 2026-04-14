@@ -144,7 +144,11 @@ def test_graph_fetches_user_context_before_order_clarification() -> None:
     registry = ToolRegistry()
     registry.register(
         "get_order_details",
-        lambda order_id: ToolResult(name="get_order_details", success=True, payload={"order_details": {"id": order_id}}),
+        lambda order_id=None, order_number=None: ToolResult(
+            name="get_order_details",
+            success=True,
+            payload={"order_details": {"id": order_id or "ORDER-ID", "order_number": order_number}},
+        ),
     )
     registry.register(
         "search_related_orders",
@@ -196,7 +200,11 @@ def test_graph_auto_uses_single_order_candidate() -> None:
     registry = ToolRegistry()
     registry.register(
         "get_order_details",
-        lambda order_id: ToolResult(name="get_order_details", success=True, payload={"order_details": {"id": order_id}}),
+        lambda order_id=None, order_number=None: ToolResult(
+            name="get_order_details",
+            success=True,
+            payload={"order_details": {"id": order_id or "ORDER-9001", "order_number": order_number or "ORD-9001"}},
+        ),
     )
     registry.register(
         "search_related_orders",
@@ -218,7 +226,159 @@ def test_graph_auto_uses_single_order_candidate() -> None:
     ticket = SupportTicketInput(ticket_id="T-102A", raw_user_message="I cannot see my order", user_id="U-200")
     result = graph.invoke(ticket.model_dump())
     assert result["facts"]["order_details"]["id"] == "ORDER-9001"
+
+
+def test_graph_propagates_user_id_before_search_related_orders() -> None:
+    class MobileAmbiguityLLM(FakeLLM):
+        def generate_structured(self, prompt: str, schema, temperature: float = 0.1):
+            if schema is AgentDecision:
+                return AgentDecision(
+                    normalized_issue_summary="App gets stuck and user cannot view order status.",
+                    issue_category="app_sync",
+                    problem_type="functionality_issue",
+                    confidence=0.85,
+                )
+            if schema is InvestigationPlan:
+                return InvestigationPlan(
+                    rationale="Resolve user, then inspect account orders and ownership.",
+                    required_tools=["get_user_profile_by_mobile", "get_ownership_record", "search_related_orders"],
+                    tool_arguments={},
+                )
+            if schema is AgentResult:
+                return AgentResult(
+                    ticket_id="ignored-by-node",
+                    issue_summary="App gets stuck and user cannot view order status.",
+                    issue_category="app_sync",
+                    problem_type="functionality_issue",
+                    decision=NextAction.pending,
+                    customer_response="Investigated account-level linkage.",
+                    internal_summary="Resolved user and fetched orders without asking for user_id.",
+                    facts={},
+                    confidence=0.9,
+                )
+            return super().generate_structured(prompt, schema, temperature)
+
+    registry = ToolRegistry()
+    registry.register(
+        "get_user_profile_by_mobile",
+        lambda mobile: ToolResult(
+            name="get_user_profile_by_mobile",
+            success=True,
+            payload={"user_profile": {"id": "USER-42", "mobile": mobile, "user_metadata": {"orderId": "ORDER-1"}}},
+        ),
+    )
+    registry.register(
+        "search_related_orders",
+        lambda user_id: ToolResult(
+            name="search_related_orders",
+            success=True,
+            payload={"related_orders": [{"id": "ORDER-1", "order_number": "ORD-1", "status": "REFUND_SUCCESSFUL"}]},
+        ),
+    )
+    registry.register(
+        "get_user_enquiries",
+        lambda user_id, active_only=True: ToolResult(
+            name="get_user_enquiries",
+            success=True,
+            payload={"user_enquiries": []},
+        ),
+    )
+    registry.register(
+        "get_ownership_record",
+        lambda user_id=None, order_id=None, vin=None: ToolResult(
+            name="get_ownership_record",
+            success=True,
+            payload={"ownership_record": {}},
+        ),
+    )
+    registry.register(
+        "get_order_details",
+        lambda order_id=None, order_number=None: ToolResult(
+            name="get_order_details",
+            success=True,
+            payload={"order_details": {"id": order_id or "ORDER-1", "order_number": order_number or "ORD-1", "status": "REFUND_SUCCESSFUL"}},
+        ),
+    )
+
+    graph = build_support_graph(settings=None, llm_client=MobileAmbiguityLLM(), retriever=FakeRetriever(), tool_registry=registry)
+    ticket = SupportTicketInput(ticket_id="T-APP-1", raw_user_message="App stuck and cannot view my order", mobile="9480300096")
+    result = graph.invoke(ticket.model_dump())
+    assert result["facts"]["user_profile"]["id"] == "USER-42"
+    assert result["facts"]["related_orders"][0]["id"] == "ORDER-1"
+    assert all(request.get("tool_name") != "search_related_orders" for request in result.get("clarification_requests", []))
+
+
+def test_graph_returns_no_payment_message_for_pending_enquiry_order_number() -> None:
+    class PendingOrderLLM(FakeLLM):
+        def generate_structured(self, prompt: str, schema, temperature: float = 0.1):
+            if schema is AgentDecision:
+                return AgentDecision(
+                    normalized_issue_summary="Order 8339-050394-7692 remains pending.",
+                    issue_category="delivery",
+                    problem_type="order_status_delay",
+                    confidence=0.9,
+                )
+            if schema is InvestigationPlan:
+                return InvestigationPlan(
+                    rationale="Inspect the referenced order.",
+                    required_tools=["get_order_details"],
+                    tool_arguments={},
+                )
+            return super().generate_structured(prompt, schema, temperature)
+
+    registry = ToolRegistry()
+    registry.register(
+        "get_user_profile_by_mobile",
+        lambda mobile: ToolResult(
+            name="get_user_profile_by_mobile",
+            success=True,
+            payload={"user_profile": {"id": "USER-42", "mobile": mobile}},
+        ),
+    )
+    registry.register(
+        "search_related_orders",
+        lambda user_id: ToolResult(name="search_related_orders", success=True, payload={"related_orders": []}),
+    )
+    registry.register(
+        "get_user_enquiries",
+        lambda user_id, active_only=True: ToolResult(
+            name="get_user_enquiries",
+            success=True,
+            payload={
+                "user_enquiries": [
+                    {
+                        "id": "ENQ-1",
+                        "order_number": "8339-050394-7692",
+                        "user_id": user_id,
+                        "enquiry_status": "ACTIVE",
+                        "status_message": "PENDING",
+                        "payment_session_id": "session_123",
+                    }
+                ]
+            },
+        ),
+    )
+    registry.register(
+        "get_order_details",
+        lambda order_id=None, order_number=None: ToolResult(name="get_order_details", success=False, payload={"order_details": {}}),
+    )
+
+    graph = build_support_graph(settings=None, llm_client=PendingOrderLLM(), retriever=FakeRetriever(), tool_registry=registry)
+    ticket = SupportTicketInput(
+        ticket_id="T-PEND-1",
+        raw_user_message="Why is order 8339-050394-7692 pending?",
+        mobile="9480300096",
+        order_number="8339-050394-7692",
+    )
+    result = graph.invoke(ticket.model_dump())
     assert result["final_result"].decision == NextAction.pending
+    assert "do not see a converted order or payment record" in result["final_result"].customer_response
+    assert "transaction ID or UTR" in result["final_result"].customer_response
+    assert result.get("clarification_requests", []) == []
+    assert result["final_result"].decision == NextAction.pending
+    assert "related_orders" not in result["final_result"].facts
+    assert len(result["final_result"].facts["user_enquiries"]) == 1
+    assert result["final_result"].facts["user_enquiries"][0]["order_number"] == "8339-050394-7692"
 
 
 def test_graph_returns_confirmation_when_multiple_order_candidates_exist() -> None:

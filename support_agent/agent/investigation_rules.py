@@ -29,6 +29,8 @@ def follow_up_rule_tools(state: AgentState, facts: dict[str, Any]) -> list[str]:
     order_details = facts.get("order_details", {})
     if isinstance(order_details, dict):
         status = str(order_details.get("status", "")).upper()
+        if state.get("order_id") and not facts.get("payment_status"):
+            tools.append("get_order_payment_status")
         if status == "DELIVERED" and state.get("order_id"):
             tools.append("get_ownership_record")
     if _is_mobile_vehicle_link_issue(state):

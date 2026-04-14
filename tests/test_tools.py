@@ -49,12 +49,12 @@ def test_get_booking_details_uses_uuid_lookup_for_uuid_input() -> None:
     repository = build_repository()
     repository.get_booking_details("3dfb661f-7756-4d06-9d72-a47093112c1a")
     sql, _, _ = repository.db.last_call
-    assert '"id" = :booking_id' in sql
-    assert '"orderNumber" = :booking_id' not in sql
+    assert '"id" = :order_id' in sql
+    assert '"orderNumber" = :order_number' not in sql
 
 
 def test_get_booking_details_uses_order_number_lookup_for_text_input() -> None:
     repository = build_repository()
     repository.get_booking_details("ORD-1001")
     sql, _, _ = repository.db.last_call
-    assert '"orderNumber" = :booking_id' in sql
+    assert '"orderNumber" = :order_number' in sql

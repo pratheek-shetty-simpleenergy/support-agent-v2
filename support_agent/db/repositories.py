@@ -59,6 +59,12 @@ class BusinessDbRepository:
         return self.db.fetch_one(sql, {"mobile": normalized_mobile}, database_key="users_stage")
 
     def get_booking_details(self, booking_id: str) -> dict | None:
+        return self.get_order_details(
+            order_id=booking_id if _is_uuid_like(booking_id) else None,
+            order_number=None if _is_uuid_like(booking_id) else booking_id,
+        )
+
+    def get_order_details(self, order_id: str | None = None, order_number: str | None = None) -> dict | None:
         binding = self._table("orders_stage", "orders")
         select_sql = f"""
         SELECT
@@ -77,11 +83,13 @@ class BusinessDbRepository:
           "updatedAt" AS updated_at
         FROM {binding.schema_name}.{binding.table}
         """
-        if _is_uuid_like(booking_id):
-            sql = f'{select_sql} WHERE "id" = :booking_id LIMIT 1'
-        else:
-            sql = f'{select_sql} WHERE "orderNumber" = :booking_id LIMIT 1'
-        return self.db.fetch_one(sql, {"booking_id": booking_id}, database_key="orders_stage")
+        if order_id:
+            sql = f'{select_sql} WHERE "id" = :order_id LIMIT 1'
+            return self.db.fetch_one(sql, {"order_id": order_id}, database_key="orders_stage")
+        if order_number:
+            sql = f'{select_sql} WHERE "orderNumber" = :order_number LIMIT 1'
+            return self.db.fetch_one(sql, {"order_number": order_number}, database_key="orders_stage")
+        raise ValueError("order_id or order_number is required for order lookup.")
 
     def get_payment_status(self, payment_id: str) -> dict | None:
         binding = self._table("orders_stage", "transactions")
@@ -102,6 +110,25 @@ class BusinessDbRepository:
         else:
             sql = f'{select_sql} WHERE "transactionId" = :payment_id LIMIT 1'
         return self.db.fetch_one(sql, {"payment_id": payment_id}, database_key="orders_stage")
+
+    def get_order_payment_status(self, order_id: str) -> dict | None:
+        binding = self._table("orders_stage", "transactions")
+        sql = f"""
+        SELECT
+          "id" AS id,
+          "orderId" AS order_id,
+          "transactionId" AS transaction_id,
+          "amount" AS amount,
+          "paymentStatus" AS payment_status,
+          "transactionMetadata" AS transaction_metadata,
+          "createdAt" AS created_at,
+          "updatedAt" AS updated_at
+        FROM {binding.schema_name}.{binding.table}
+        WHERE "orderId" = :order_id
+        ORDER BY "createdAt" DESC
+        LIMIT 1
+        """
+        return self.db.fetch_one(sql, {"order_id": order_id}, database_key="orders_stage")
 
     def get_vehicle_details(self, vehicle_id: str) -> dict | None:
         binding = self._table("ownership_stage", "ownerships")
