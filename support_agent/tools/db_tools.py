@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from support_agent.db.repositories import BusinessDbRepository
+from support_agent.services.pinot_service import PinotServiceClient
+from support_agent.services.vehicle_service import VehicleServiceClient
 from support_agent.schemas.tool import ToolResult
 from support_agent.tools.base import ToolRegistry
 
 
-def build_business_db_tools(repository: BusinessDbRepository) -> ToolRegistry:
+def build_business_db_tools(
+    repository: BusinessDbRepository,
+    vehicle_service: VehicleServiceClient | None = None,
+    pinot_service: PinotServiceClient | None = None,
+) -> ToolRegistry:
     registry = ToolRegistry()
 
     def get_user_profile(user_id: str) -> ToolResult:
@@ -35,6 +41,50 @@ def build_business_db_tools(repository: BusinessDbRepository) -> ToolRegistry:
     def get_vehicle_details(vehicle_id: str) -> ToolResult:
         payload = repository.get_vehicle_details(vehicle_id=vehicle_id)
         return ToolResult(name="get_vehicle_details", success=payload is not None, payload={"vehicle_details": payload or {}})
+
+    def get_vehicle_last_seen(vin: str) -> ToolResult:
+        if vehicle_service is None:
+            return ToolResult(
+                name="get_vehicle_last_seen",
+                success=False,
+                payload={},
+                error="permanent_dependency_error: Vehicle service is not configured.",
+            )
+        payload = vehicle_service.get_vehicle_last_seen(vin=vin)
+        return ToolResult(name="get_vehicle_last_seen", success=payload is not None, payload={"vehicle_last_seen": payload or {}})
+
+    def get_telematics_signal_summary(vin: str) -> ToolResult:
+        if pinot_service is None:
+            return ToolResult(
+                name="get_telematics_signal_summary",
+                success=False,
+                payload={},
+                error="permanent_dependency_error: Pinot service is not configured.",
+            )
+        payload = pinot_service.get_telematics_signal_summary(vin=vin)
+        return ToolResult(name="get_telematics_signal_summary", success=True, payload={"telematics_status": payload})
+
+    def get_trip_history_summary(vin: str) -> ToolResult:
+        if pinot_service is None:
+            return ToolResult(
+                name="get_trip_history_summary",
+                success=False,
+                payload={},
+                error="permanent_dependency_error: Pinot service is not configured.",
+            )
+        payload = pinot_service.get_trip_history_summary(vin=vin)
+        return ToolResult(name="get_trip_history_summary", success=True, payload={"trip_history_status": payload})
+
+    def get_charging_history_summary(vin: str) -> ToolResult:
+        if pinot_service is None:
+            return ToolResult(
+                name="get_charging_history_summary",
+                success=False,
+                payload={},
+                error="permanent_dependency_error: Pinot service is not configured.",
+            )
+        payload = pinot_service.get_charging_history_summary(vin=vin)
+        return ToolResult(name="get_charging_history_summary", success=True, payload={"charging_history_status": payload})
 
     def get_ticket_history(user_id: str) -> ToolResult:
         payload = repository.get_ticket_history(user_id=user_id)
@@ -79,6 +129,10 @@ def build_business_db_tools(repository: BusinessDbRepository) -> ToolRegistry:
     registry.register("get_payment_status", get_payment_status)
     registry.register("get_order_payment_status", get_order_payment_status)
     registry.register("get_vehicle_details", get_vehicle_details)
+    registry.register("get_vehicle_last_seen", get_vehicle_last_seen)
+    registry.register("get_telematics_signal_summary", get_telematics_signal_summary)
+    registry.register("get_trip_history_summary", get_trip_history_summary)
+    registry.register("get_charging_history_summary", get_charging_history_summary)
     registry.register("get_ticket_history", get_ticket_history)
     registry.register("get_ticket_details", get_ticket_details)
     registry.register("get_ticket_comments", get_ticket_comments)

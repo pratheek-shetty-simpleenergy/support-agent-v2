@@ -16,6 +16,7 @@ class AgentState(TypedDict, total=False):
     order_id: str | None
     order_number: str | None
     vehicle_id: str | None
+    vehicle_vin: str | None
     normalized_issue_summary: str
     issue_category: str
     problem_type: str

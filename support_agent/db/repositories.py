@@ -465,5 +465,7 @@ def _normalize_mobile_number(mobile: str) -> str:
     return mobile
 
 
-def _is_uuid_like(value: str) -> bool:
-    return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value))
+def _is_uuid_like(value: object) -> bool:
+    if value is None:
+        return False
+    return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", str(value)))

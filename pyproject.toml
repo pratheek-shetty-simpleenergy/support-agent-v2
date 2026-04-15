@@ -16,6 +16,9 @@ dependencies = [
   "psycopg[binary]>=3.2.0",
   "pinecone>=5.0.1",
   "requests>=2.32.0",
+  "fastapi>=0.115.0",
+  "redis>=5.0.0",
+  "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]

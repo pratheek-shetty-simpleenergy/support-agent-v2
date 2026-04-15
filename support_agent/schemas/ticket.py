@@ -19,3 +19,4 @@ class SupportTicketInput(BaseModel):
     order_id: str | None = None
     order_number: str | None = Field(default=None, validation_alias=AliasChoices("order_number", "orderNumber"))
     vehicle_id: str | None = None
+    vehicle_vin: str | None = Field(default=None, validation_alias=AliasChoices("vehicle_vin", "vin"))

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from support_agent.agent.investigation_rules import (
     candidate_order_numbers,
@@ -27,6 +29,7 @@ from support_agent.tools.base import ToolRegistry
 
 @dataclass
 class NodeDependencies:
+    settings: Any
     llm_client: LlamaClient
     retriever: Any
     tool_registry: ToolRegistry
@@ -147,6 +150,11 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
         resolved_user_id = _resolve_user_id(working_state, facts)
         if resolved_user_id and arguments.get("user_id") in (None, ""):
             arguments["user_id"] = resolved_user_id
+        resolved_vehicle_vin = _resolve_vehicle_vin(working_state, facts)
+        if resolved_vehicle_vin and arguments.get("vin") in (None, ""):
+            arguments["vin"] = resolved_vehicle_vin
+        if tool_name == "get_vehicle_details" and resolved_vehicle_vin and arguments.get("vehicle_id") in (None, ""):
+            arguments["vehicle_id"] = resolved_vehicle_vin
         if not deps.tool_registry.has_tool(tool_name):
             if tool_name not in planned_tools:
                 trace.append(f"Skipped optional follow-up tool {tool_name} because it is not registered.")
@@ -187,6 +195,11 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
             resolved_user_id = _resolve_user_id(working_state, facts)
             if resolved_user_id and arguments.get("user_id") in (None, ""):
                 arguments["user_id"] = resolved_user_id
+            resolved_vehicle_vin = _resolve_vehicle_vin(working_state, facts)
+            if resolved_vehicle_vin and arguments.get("vin") in (None, ""):
+                arguments["vin"] = resolved_vehicle_vin
+            if tool_name == "get_vehicle_details" and resolved_vehicle_vin and arguments.get("vehicle_id") in (None, ""):
+                arguments["vehicle_id"] = resolved_vehicle_vin
             trace = _append_tool_trace(trace, tool_name, facts, working_state)
             missing_arguments = [
                 parameter
@@ -244,6 +257,7 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
         facts.update(result.payload)
         working_state.update(_propagate_identifiers_from_facts(working_state, facts))
         trace.append(f"Ran {tool_name} and received fields: {', '.join(sorted(result.payload.keys()))}.")
+        trace = _append_live_summary_trace(trace, tool_name, facts, working_state, deps)
         log_event(
             "tool_succeeded",
             ticket_id=state.get("ticket_id"),
@@ -285,24 +299,7 @@ def run_tools(state: AgentState, deps: NodeDependencies) -> AgentState:
 
 
 def finalize_response(state: AgentState, deps: NodeDependencies) -> AgentState:
-    clarification_requests = state.get("clarification_requests", [])
-    if clarification_requests:
-        final = _build_clarification_result(state, clarification_requests)
-        final.facts = _prune_final_facts(state, state.get("facts", {}))
-        return {
-            "next_action": final.decision,
-            "final_result": final,
-            "investigation_trace": _append_trace(state, f"Finished with clarification request: {final.customer_response}"),
-        }
-    if state.get("tool_failures"):
-        final = _build_fallback_final_result(state)
-        final.facts = _prune_final_facts(state, state.get("facts", {}))
-        return {
-            "next_action": final.decision,
-            "final_result": final,
-            "investigation_trace": _append_trace(state, f"Finished with decision={final.decision} confidence={final.confidence}"),
-        }
-    deterministic_mobile_result = _build_mobile_vehicle_linkage_result(state)
+    deterministic_mobile_result = _build_mobile_vehicle_linkage_result(state, deps)
     if deterministic_mobile_result is not None:
         deterministic_mobile_result.facts = _prune_final_facts(state, state.get("facts", {}))
         return {
@@ -323,6 +320,23 @@ def finalize_response(state: AgentState, deps: NodeDependencies) -> AgentState:
                 state,
                 f"Finished with deterministic pending-order diagnosis: {deterministic_pending_order_result.internal_summary}",
             ),
+        }
+    clarification_requests = state.get("clarification_requests", [])
+    if clarification_requests:
+        final = _build_clarification_result(state, clarification_requests)
+        final.facts = _prune_final_facts(state, state.get("facts", {}))
+        return {
+            "next_action": final.decision,
+            "final_result": final,
+            "investigation_trace": _append_trace(state, f"Finished with clarification request: {final.customer_response}"),
+        }
+    if state.get("tool_failures"):
+        final = _build_fallback_final_result(state)
+        final.facts = _prune_final_facts(state, state.get("facts", {}))
+        return {
+            "next_action": final.decision,
+            "final_result": final,
+            "investigation_trace": _append_trace(state, f"Finished with decision={final.decision} confidence={final.confidence}"),
         }
 
     facts_text = _stringify(state.get("facts", {}))
@@ -385,13 +399,24 @@ def _build_ticket_context(state: AgentState) -> str:
         "order_id": state.get("order_id"),
         "order_number": state.get("order_number"),
         "vehicle_id": state.get("vehicle_id"),
+        "vehicle_vin": state.get("vehicle_vin"),
     }
     history = "\n".join(f"{msg['role']}: {msg['content']}" for msg in state.get("conversation_history", []))
     return f"Identifiers: {identifiers}\nConversation:\n{history}"
 
 
 def _hydrate_tool_arguments(state: AgentState, arguments: dict[str, Any]) -> dict[str, Any]:
-    fallback_fields = ("ticket_id", "user_id", "mobile", "booking_id", "payment_id", "order_id", "order_number", "vehicle_id")
+    fallback_fields = (
+        "ticket_id",
+        "user_id",
+        "mobile",
+        "booking_id",
+        "payment_id",
+        "order_id",
+        "order_number",
+        "vehicle_id",
+        "vehicle_vin",
+    )
     for field in fallback_fields:
         if field not in arguments and state.get(field):
             if field == "ticket_id" and arguments.get("ticket_id") is None:
@@ -410,6 +435,8 @@ def _hydrate_tool_arguments(state: AgentState, arguments: dict[str, Any]) -> dic
                 arguments["order_number"] = state[field]
             if field == "vehicle_id" and arguments.get("vehicle_id") is None:
                 arguments["vehicle_id"] = state[field]
+            if field == "vehicle_vin" and arguments.get("vin") is None:
+                arguments["vin"] = state[field]
     return arguments
 
 
@@ -436,6 +463,77 @@ def _append_tool_trace(
         related_count = len(facts.get("related_orders", []) or [])
         enquiry_count = len(facts.get("user_enquiries", []) or [])
         updates.append(f"Current order candidates: {related_count} orders, {enquiry_count} enquiries.")
+    return updates
+
+
+def _append_live_summary_trace(
+    trace: list[str],
+    tool_name: str,
+    facts: dict[str, Any],
+    working_state: dict[str, Any],
+    deps: NodeDependencies,
+) -> list[str]:
+    updates: list[str] = list(trace)
+    if tool_name == "get_user_profile_by_mobile" and working_state.get("user_id"):
+        updates.append("Resolved user from mobile number.")
+    elif tool_name in {"search_related_orders", "get_user_enquiries"}:
+        related_orders = facts.get("related_orders", []) if isinstance(facts.get("related_orders"), list) else []
+        user_enquiries = facts.get("user_enquiries", []) if isinstance(facts.get("user_enquiries"), list) else []
+        delivered_count = sum(
+            1 for order in related_orders if isinstance(order, dict) and str(order.get("status", "")).upper() == "DELIVERED"
+        )
+        updates.append(
+            f"Found {len(related_orders)} related orders, {delivered_count} delivered, and {len(user_enquiries)} active enquiries."
+        )
+    elif tool_name == "get_ownership_record":
+        ownership_record = facts.get("ownership_record", {}) if isinstance(facts.get("ownership_record"), dict) else {}
+        if ownership_record.get("vin"):
+            updates.append("Matched VIN to ownership record.")
+    elif tool_name == "get_vehicle_details":
+        vehicle_details = facts.get("vehicle_details", {}) if isinstance(facts.get("vehicle_details"), dict) else {}
+        if vehicle_details:
+            updates.append("Loaded vehicle details for the linked VIN.")
+    elif tool_name == "get_order_details":
+        order_details = facts.get("order_details", {}) if isinstance(facts.get("order_details"), dict) else {}
+        if order_details:
+            order_number = order_details.get("order_number") or order_details.get("id")
+            status = order_details.get("status")
+            updates.append(f"Loaded order {order_number} with status {status}.")
+    elif tool_name == "get_order_payment_status":
+        payment_status = facts.get("payment_status", {}) if isinstance(facts.get("payment_status"), dict) else {}
+        if payment_status:
+            updates.append("Found payment status for the investigated order.")
+        else:
+            updates.append("No payment record found for the investigated order.")
+    elif tool_name == "get_vehicle_last_seen":
+        vehicle_last_seen = facts.get("vehicle_last_seen", {}) if isinstance(facts.get("vehicle_last_seen"), dict) else {}
+        is_active = vehicle_last_seen.get("is_active")
+        if is_active is False:
+            updates.append("Heartbeat says the vehicle is offline; checking telematics.")
+        elif is_active is True:
+            updates.append("Heartbeat says the vehicle is online.")
+        else:
+            updates.append("Heartbeat data is missing; checking telematics.")
+    elif tool_name == "get_telematics_signal_summary":
+        telematics_status = facts.get("telematics_status", {}) if isinstance(facts.get("telematics_status"), dict) else {}
+        if telematics_status.get("has_signal_data") is False:
+            updates.append("No telematics data found for this VIN.")
+        elif _is_recent_epoch_millis(telematics_status.get("latest_event_time"), getattr(deps.settings, "telematics_freshness_minutes", 10)):
+            updates.append("Fresh telematics exists, so this looks like heartbeat inconsistency.")
+        elif telematics_status:
+            updates.append("Telematics data exists for this VIN.")
+    elif tool_name == "get_trip_history_summary":
+        trip_history_status = facts.get("trip_history_status", {}) if isinstance(facts.get("trip_history_status"), dict) else {}
+        if trip_history_status.get("has_trip_data") is False:
+            updates.append("No recent trip data found for this VIN.")
+        elif trip_history_status:
+            updates.append("Trip history exists for this VIN.")
+    elif tool_name == "get_charging_history_summary":
+        charging_history_status = facts.get("charging_history_status", {}) if isinstance(facts.get("charging_history_status"), dict) else {}
+        if charging_history_status.get("has_charging_data") is False:
+            updates.append("No charging history found for this VIN.")
+        elif charging_history_status:
+            updates.append("Charging history exists for this VIN.")
     return updates
 
 
@@ -649,6 +747,33 @@ def _resolve_user_id(state: AgentState, facts: dict[str, Any]) -> str | None:
     return None
 
 
+def _resolve_vehicle_vin(state: AgentState, facts: dict[str, Any]) -> str | None:
+    vehicle_vin = state.get("vehicle_vin")
+    if isinstance(vehicle_vin, str) and vehicle_vin:
+        return vehicle_vin
+    vehicle_last_seen = facts.get("vehicle_last_seen", {})
+    if isinstance(vehicle_last_seen, dict):
+        vin = vehicle_last_seen.get("vin")
+        if isinstance(vin, str) and vin:
+            return vin
+    vehicle_details = facts.get("vehicle_details", {})
+    if isinstance(vehicle_details, dict):
+        vin = vehicle_details.get("vin")
+        if isinstance(vin, str) and vin:
+            return vin
+    ownership_record = facts.get("ownership_record", {})
+    if isinstance(ownership_record, dict):
+        vin = ownership_record.get("vin")
+        if isinstance(vin, str) and vin:
+            return vin
+    user_profile = facts.get("user_profile", {})
+    if isinstance(user_profile, dict):
+        vin = user_profile.get("primary_vin")
+        if isinstance(vin, str) and vin:
+            return vin
+    return None
+
+
 def _propagate_identifiers_from_facts(state: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
     updates: dict[str, Any] = {}
 
@@ -658,14 +783,8 @@ def _propagate_identifiers_from_facts(state: dict[str, Any], facts: dict[str, An
             updates["user_id"] = user_profile["id"]
         if not state.get("mobile") and user_profile.get("mobile"):
             updates["mobile"] = user_profile["mobile"]
-        if not state.get("vehicle_id") and user_profile.get("primary_vin"):
-            updates["vehicle_id"] = user_profile["primary_vin"]
-
-        user_metadata = user_profile.get("user_metadata", {})
-        if isinstance(user_metadata, dict) and not state.get("order_id") and not state.get("order_number"):
-            order_id = user_metadata.get("orderId") or user_metadata.get("order_id")
-            if order_id:
-                updates["order_id"] = order_id
+        if not state.get("vehicle_vin") and user_profile.get("primary_vin"):
+            updates["vehicle_vin"] = user_profile["primary_vin"]
 
     ticket_details = facts.get("ticket_details", {})
     if isinstance(ticket_details, dict):
@@ -705,14 +824,34 @@ def _propagate_identifiers_from_facts(state: dict[str, Any], facts: dict[str, An
 
     ownership_record = facts.get("ownership_record", {})
     if isinstance(ownership_record, dict):
+        if not state.get("vehicle_vin") and ownership_record.get("vin"):
+            updates["vehicle_vin"] = ownership_record["vin"]
         if not state.get("vehicle_id"):
-            vehicle_id = ownership_record.get("vin") or ownership_record.get("registration_number") or ownership_record.get("id")
+            vehicle_id = ownership_record.get("id") or ownership_record.get("registration_number")
             if vehicle_id:
                 updates["vehicle_id"] = vehicle_id
         if not state.get("order_id") and ownership_record.get("order_id"):
             updates["order_id"] = ownership_record["order_id"]
         if not state.get("user_id") and ownership_record.get("user_id"):
             updates["user_id"] = ownership_record["user_id"]
+
+    vehicle_details = facts.get("vehicle_details", {})
+    if isinstance(vehicle_details, dict):
+        if not state.get("vehicle_vin") and vehicle_details.get("vin"):
+            updates["vehicle_vin"] = vehicle_details["vin"]
+        if not state.get("vehicle_id"):
+            vehicle_id = vehicle_details.get("id") or vehicle_details.get("registration_number")
+            if vehicle_id:
+                updates["vehicle_id"] = vehicle_id
+        if not state.get("order_id") and vehicle_details.get("order_id"):
+            updates["order_id"] = vehicle_details["order_id"]
+        if not state.get("user_id") and vehicle_details.get("user_id"):
+            updates["user_id"] = vehicle_details["user_id"]
+
+    vehicle_last_seen = facts.get("vehicle_last_seen", {})
+    if isinstance(vehicle_last_seen, dict):
+        if not state.get("vehicle_vin") and vehicle_last_seen.get("vin"):
+            updates["vehicle_vin"] = vehicle_last_seen["vin"]
 
     if order_candidates_ready(state, facts):
         candidates = order_candidates(facts)
@@ -745,7 +884,7 @@ def _is_mobile_vehicle_linkage_gap(state: AgentState) -> bool:
     return False
 
 
-def _build_mobile_vehicle_linkage_result(state: AgentState) -> AgentResult | None:
+def _build_mobile_vehicle_linkage_result(state: AgentState, deps: NodeDependencies) -> AgentResult | None:
     category = str(state.get("issue_category", "")).lower()
     problem_type = str(state.get("problem_type", "")).lower()
     if category not in {"mobile_app", "app_sync", "login"} and problem_type not in {"login", "app_sync", "vehicle_linking"}:
@@ -755,9 +894,34 @@ def _build_mobile_vehicle_linkage_result(state: AgentState) -> AgentResult | Non
     user_profile = facts.get("user_profile", {}) if isinstance(facts.get("user_profile"), dict) else {}
     order_details = facts.get("order_details", {}) if isinstance(facts.get("order_details"), dict) else {}
     ownership_record = facts.get("ownership_record", {}) if isinstance(facts.get("ownership_record"), dict) else {}
+    related_orders = facts.get("related_orders", []) if isinstance(facts.get("related_orders"), list) else []
+    vehicle_last_seen = facts.get("vehicle_last_seen", {}) if isinstance(facts.get("vehicle_last_seen"), dict) else {}
+    telematics_status = facts.get("telematics_status", {}) if isinstance(facts.get("telematics_status"), dict) else {}
+    trip_history_status = facts.get("trip_history_status", {}) if isinstance(facts.get("trip_history_status"), dict) else {}
+    charging_history_status = facts.get("charging_history_status", {}) if isinstance(facts.get("charging_history_status"), dict) else {}
 
     if not user_profile:
         return None
+
+    delivered_orders = [
+        order for order in related_orders
+        if isinstance(order, dict) and str(order.get("status", "")).upper() == "DELIVERED"
+    ]
+    if related_orders and not delivered_orders:
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=(
+                "I checked your account and none of the orders linked to it are in DELIVERED state yet. "
+                "For the mobile app to attach a vehicle and work fully, at least one order must be delivered and then linked through ownership and primary VIN mapping."
+            ),
+            internal_summary="Mobile app issue traced to account having no delivered orders yet.",
+            facts=facts,
+            confidence=0.94,
+        )
 
     order_id = order_details.get("id")
     order_number = order_details.get("order_number") or state.get("order_number")
@@ -765,6 +929,42 @@ def _build_mobile_vehicle_linkage_result(state: AgentState) -> AgentResult | Non
     ownership_order_id = ownership_record.get("order_id")
     ownership_vin = ownership_record.get("vin")
     primary_vin = user_profile.get("primary_vin")
+    ownership_linked_order = next(
+        (
+            order
+            for order in related_orders
+            if isinstance(order, dict) and ownership_order_id and order.get("id") == ownership_order_id
+        ),
+        {},
+    )
+    ownership_linked_status = str(ownership_linked_order.get("status", "")).upper()
+    ownership_linked_order_number = ownership_linked_order.get("order_number") or ownership_order_id
+
+    if (
+        ownership_order_id
+        and ownership_vin
+        and primary_vin
+        and ownership_vin == primary_vin
+        and ownership_linked_status == "DELIVERED"
+    ):
+        order_id = ownership_order_id
+        order_number = ownership_linked_order_number
+        order_status = "DELIVERED"
+    elif order_id and ownership_order_id and ownership_order_id != order_id:
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=(
+                f"I found that order {order_number or order_id} is not the same order linked to the owned vehicle record. "
+                f"The vehicle is linked to order {ownership_linked_order_number or ownership_order_id}, so the support team should verify that delivered order mapping."
+            ),
+            internal_summary="Ownership record exists but is linked to a different order than the current investigated order.",
+            facts=facts,
+            confidence=0.88,
+        )
 
     if order_details and order_status and order_status != "DELIVERED":
         return AgentResult(
@@ -780,22 +980,6 @@ def _build_mobile_vehicle_linkage_result(state: AgentState) -> AgentResult | Non
             internal_summary="Mobile app issue traced to non-delivered order state before ownership/primary VIN linkage.",
             facts=facts,
             confidence=0.9,
-        )
-
-    if order_id and ownership_order_id and ownership_order_id != order_id:
-        return AgentResult(
-            ticket_id=state["ticket_id"],
-            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
-            issue_category=state.get("issue_category", "unknown"),
-            problem_type=state.get("problem_type", "unknown"),
-            decision=NextAction.pending,
-            customer_response=(
-                f"I found that order {order_number or order_id} is not the same order linked to the owned vehicle record. "
-                "The support team should verify which delivered order is mapped to your ownership record."
-            ),
-            internal_summary="Ownership record exists but is linked to a different order than the current investigated order.",
-            facts=facts,
-            confidence=0.88,
         )
 
     if order_status == "DELIVERED" and not ownership_record:
@@ -837,7 +1021,210 @@ def _build_mobile_vehicle_linkage_result(state: AgentState) -> AgentResult | Non
             confidence=0.86,
         )
 
+    if vehicle_last_seen:
+        vin = vehicle_last_seen.get("vin")
+        last_seen = vehicle_last_seen.get("last_seen")
+        is_active = vehicle_last_seen.get("is_active")
+        if is_active is False:
+            details: list[str] = []
+            formatted_last_seen = _format_display_time(last_seen)
+            if formatted_last_seen:
+                details.append(f"The last heartbeat we found was at {formatted_last_seen}.")
+            telematics_latest = _format_display_time(telematics_status.get("latest_event_time"))
+            telematics_is_fresh = _is_recent_epoch_millis(
+                telematics_status.get("latest_event_time"),
+                getattr(deps.settings, "telematics_freshness_minutes", 10),
+            )
+            if telematics_latest and telematics_latest != last_seen:
+                details.append(f"The last telematics signal we found was at {telematics_latest}.")
+            elif telematics_status and telematics_status.get("has_signal_data") is False:
+                details.append("I could not find telematics signal data for this VIN in our telemetry pipeline.")
+            last_trip_end = _format_display_time(trip_history_status.get("last_trip_end_time"))
+            if last_trip_end:
+                details.append(f"The most recent trip we found ended at {last_trip_end}.")
+            elif trip_history_status and trip_history_status.get("has_trip_data") is False:
+                details.append("I could not find recent trip data for this VIN.")
+            suffix = f" {' '.join(details)}" if details else ""
+            if telematics_is_fresh:
+                return AgentResult(
+                    ticket_id=state["ticket_id"],
+                    issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+                    issue_category=state.get("issue_category", "unknown"),
+                    problem_type=state.get("problem_type", "unknown"),
+                    decision=NextAction.pending,
+                    customer_response=(
+                        f"Your vehicle {vin or ''} is still sending fresh telematics data, so it does not appear fully offline. "
+                        f"The heartbeat status looks inconsistent or stale.{suffix} "
+                        "The support team should verify the heartbeat/online-status pipeline for this vehicle."
+                    ).strip(),
+                    internal_summary="Heartbeat reports offline, but fresh telematics data indicates the vehicle is still actively sending telemetry.",
+                    facts=facts,
+                    confidence=0.9,
+                )
+            return AgentResult(
+                ticket_id=state["ticket_id"],
+                issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+                issue_category=state.get("issue_category", "unknown"),
+                problem_type=state.get("problem_type", "unknown"),
+                decision=NextAction.pending,
+                customer_response=(
+                    f"Your vehicle {vin or ''} appears to be offline right now and not connected to the internet.{suffix} "
+                    "If app data is not syncing, please switch on the vehicle and ensure it regains connectivity."
+                ).strip(),
+                internal_summary="Ownership and VIN linkage are present, but vehicle heartbeat shows the vehicle is offline.",
+                facts=facts,
+                confidence=0.9,
+            )
+        if is_active is True and telematics_status and telematics_status.get("has_signal_data") is True:
+            return AgentResult(
+                ticket_id=state["ticket_id"],
+                issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+                issue_category=state.get("issue_category", "unknown"),
+                problem_type=state.get("problem_type", "unknown"),
+                decision=NextAction.pending,
+                customer_response=(
+                    "Your vehicle appears to be online and connected to the internet, and telematics data exists for it. "
+                    "The sync issue is likely not caused by vehicle connectivity or missing telemetry, so the support team should continue investigating the app/data sync path."
+                ),
+                internal_summary="Vehicle heartbeat is active and telemetry exists; app sync issue is not caused by connectivity or missing telematics.",
+                facts=facts,
+                confidence=0.88,
+            )
+
+    reference_vin = (
+        (vehicle_last_seen.get("vin") if isinstance(vehicle_last_seen, dict) else None)
+        or ownership_vin
+        or primary_vin
+        or state.get("vehicle_vin")
+        or ""
+    )
+    if telematics_status and telematics_status.get("has_signal_data") is False:
+        heartbeat_prefix = "I could not find a recent heartbeat for your vehicle, and " if not vehicle_last_seen else ""
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=(
+                f"{heartbeat_prefix}I could not find telematics signal data for vehicle {reference_vin} in our telemetry pipeline. "
+                "The support team should verify telematics ingestion for this VIN."
+            ).strip(),
+            internal_summary="Vehicle linkage is correct, but no telematics signal data exists for the VIN.",
+            facts=facts,
+            confidence=0.9,
+        )
+    if not vehicle_last_seen and telematics_status and telematics_status.get("has_signal_data") is True:
+        details: list[str] = []
+        telematics_latest = _format_display_time(telematics_status.get("latest_event_time"))
+        if telematics_latest:
+            details.append(f"The last telematics signal we found was at {telematics_latest}.")
+        last_trip_end = _format_display_time(trip_history_status.get("last_trip_end_time"))
+        if last_trip_end:
+            details.append(f"The most recent trip we found ended at {last_trip_end}.")
+        suffix = f" {' '.join(details)}" if details else ""
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=(
+                f"I could not find a current heartbeat for vehicle {reference_vin}, but telematics data does exist for it.{suffix} "
+                "The support team should verify why heartbeat status is missing even though telemetry is present."
+            ).strip(),
+            internal_summary="Heartbeat status is missing, but telematics data exists for the VIN.",
+            facts=facts,
+            confidence=0.88,
+        )
+    if trip_history_status and trip_history_status.get("has_trip_data") is False:
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=(
+                "Your vehicle linkage looks correct, but I could not find trip telemetry for this VIN. "
+                "The support team should verify trip ingestion and sync for the vehicle."
+            ),
+            internal_summary="Trip-specific sync issue: no trip history data found for the VIN.",
+            facts=facts,
+            confidence=0.88,
+        )
+    if charging_history_status and charging_history_status.get("has_charging_data") is False:
+        return AgentResult(
+            ticket_id=state["ticket_id"],
+            issue_summary=state.get("normalized_issue_summary", state["raw_user_message"]),
+            issue_category=state.get("issue_category", "unknown"),
+            problem_type=state.get("problem_type", "unknown"),
+            decision=NextAction.pending,
+            customer_response=(
+                "Your vehicle linkage looks correct, but I could not find charging telemetry for this VIN. "
+                "The support team should verify charging-history ingestion and sync."
+            ),
+            internal_summary="Charging-specific sync issue: no charging history data found for the VIN.",
+            facts=facts,
+            confidence=0.88,
+        )
+
     return None
+
+
+def _format_display_time(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    ist = ZoneInfo("Asia/Kolkata")
+    dt: datetime | None = None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 1_000_000_000_000:
+            timestamp = timestamp / 1000.0
+        try:
+            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    elif isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        dt = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    else:
+        return None
+    try:
+        local_dt = dt.astimezone(ist)
+        now_local = datetime.now(ist)
+        local_date = local_dt.date()
+        today = now_local.date()
+        yesterday = today.fromordinal(today.toordinal() - 1)
+        time_text = local_dt.strftime("%I:%M%p").lstrip("0").lower()
+        if local_date == today:
+            return f"today {time_text}"
+        if local_date == yesterday:
+            return f"yesterday {time_text}"
+        return f"{local_dt.strftime('%d %b %Y')}, {time_text} IST"
+    except Exception:
+        return None
+
+
+def _is_recent_epoch_millis(value: Any, freshness_minutes: int) -> bool:
+    if not isinstance(value, (int, float)):
+        return False
+    timestamp = float(value)
+    if timestamp > 1_000_000_000_000:
+        timestamp = timestamp / 1000.0
+    try:
+        event_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return False
+    age_seconds = (datetime.now(timezone.utc) - event_dt).total_seconds()
+    return age_seconds >= 0 and age_seconds <= max(freshness_minutes, 0) * 60
 
 
 def _find_target_enquiry(state: AgentState, facts: dict[str, Any]) -> dict[str, Any]:

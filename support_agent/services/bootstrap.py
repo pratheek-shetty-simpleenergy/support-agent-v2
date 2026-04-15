@@ -8,6 +8,8 @@ from support_agent.llm.client import LlamaClient
 from support_agent.retrieval.embedder import OllamaEmbeddingAdapter
 from support_agent.retrieval.retriever import PineconeRetriever
 from support_agent.runtime import configure_logging, log_event
+from support_agent.services.pinot_service import PinotServiceClient
+from support_agent.services.vehicle_service import VehicleServiceClient
 from support_agent.tools.db_tools import build_business_db_tools
 
 
@@ -17,7 +19,9 @@ def build_application(settings: Settings | None = None):
     llama_client = LlamaClient(app_settings)
     db_manager = BusinessDbManager(app_settings)
     repository = BusinessDbRepository(db_manager, app_settings)
-    tool_registry = build_business_db_tools(repository)
+    vehicle_service = VehicleServiceClient(app_settings)
+    pinot_service = PinotServiceClient(app_settings)
+    tool_registry = build_business_db_tools(repository, vehicle_service=vehicle_service, pinot_service=pinot_service)
     retriever = PineconeRetriever(app_settings, OllamaEmbeddingAdapter(llama_client))
     log_event(
         "application_bootstrap",

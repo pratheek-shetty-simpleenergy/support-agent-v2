@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     pinecone_namespace: str = Field(default="support", alias="PINECONE_NAMESPACE")
     pinecone_top_k: int = Field(default=5, alias="PINECONE_TOP_K")
     pinecone_required: bool = Field(default=False, alias="PINECONE_REQUIRED")
+    vehicle_service_apikey: str | None = Field(default=None, alias="VEHICLE_SERVICE_APIKEY")
+    vehicle_service_url: str | None = Field(default=None, alias="VEHICLE_SERVICE_URL")
+    pinot_broker: str | None = Field(default=None, alias="PINOT_BROKER")
+    pinot_authorization: str | None = Field(default=None, alias="PINOT_AUTHORIZATION")
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     redact_pii_in_logs: bool = Field(default=True, alias="REDACT_PII_IN_LOGS")
@@ -33,6 +37,7 @@ class Settings(BaseSettings):
     dependency_retry_attempts: int = Field(default=2, alias="DEPENDENCY_RETRY_ATTEMPTS")
     dependency_retry_backoff_seconds: float = Field(default=0.25, alias="DEPENDENCY_RETRY_BACKOFF_SECONDS")
     ollama_timeout_seconds: int = Field(default=60, alias="OLLAMA_TIMEOUT_SECONDS")
+    telematics_freshness_minutes: int = Field(default=10, alias="TELEMATICS_FRESHNESS_MINUTES")
 
     database_server_url: str | None = Field(default=None, alias="DATABASE_SERVER_URL")
     db_connect_timeout_seconds: int = Field(default=10, alias="DB_CONNECT_TIMEOUT_SECONDS")
@@ -40,6 +45,15 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
     db_max_overflow: int = Field(default=5, alias="DB_MAX_OVERFLOW")
     db_pool_recycle_seconds: int = Field(default=1800, alias="DB_POOL_RECYCLE_SECONDS")
+    redis_url: str | None = Field(default="redis://127.0.0.1:6379/0", alias="REDIS_URL")
+    support_ai_session_ttl_seconds: int = Field(default=86400, alias="SUPPORT_AI_SESSION_TTL_SECONDS")
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ],
+        alias="CORS_ALLOWED_ORIGINS",
+    )
     business_db_names: dict[str, str] = Field(
         default_factory=lambda: {
             "dms_stage": "dms-stage",
@@ -97,6 +111,12 @@ class Settings(BaseSettings):
                 raise ValueError("OpenAI configuration is incomplete. Set OPENAI_API_KEY and OPENAI_MODEL.")
             return
         raise ValueError(f"Unsupported LLM_PROVIDER: {self.llm_provider}")
+
+    def vehicle_service_enabled(self) -> bool:
+        return bool(self.vehicle_service_apikey and self.vehicle_service_url)
+
+    def pinot_service_enabled(self) -> bool:
+        return bool(self.pinot_broker and self.pinot_authorization)
 
     @classmethod
     def settings_customise_sources(

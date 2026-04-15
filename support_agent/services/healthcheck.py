@@ -7,6 +7,8 @@ from support_agent.db.client import BusinessDbManager
 from support_agent.llm.client import LlamaClient
 from support_agent.retrieval.embedder import OllamaEmbeddingAdapter
 from support_agent.retrieval.retriever import PineconeRetriever
+from support_agent.services.pinot_service import PinotServiceClient
+from support_agent.services.vehicle_service import VehicleServiceClient
 
 
 def run_healthcheck(settings: Settings | None = None) -> dict[str, Any]:
@@ -14,10 +16,13 @@ def run_healthcheck(settings: Settings | None = None) -> dict[str, Any]:
     llm_client = LlamaClient(app_settings)
     db_manager = BusinessDbManager(app_settings)
     retriever = PineconeRetriever(app_settings, OllamaEmbeddingAdapter(llm_client))
+    vehicle_service = VehicleServiceClient(app_settings)
+    pinot_service = PinotServiceClient(app_settings)
     return {
         "app_name": app_settings.app_name,
         "ollama": llm_client.healthcheck(),
         "databases": db_manager.healthcheck(),
         "pinecone": retriever.healthcheck(),
+        "vehicle_service": vehicle_service.healthcheck(),
+        "pinot_service": pinot_service.healthcheck(),
     }
-

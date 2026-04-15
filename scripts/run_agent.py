@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from support_agent.runtime import configure_logging, redact_for_logging
+from support_agent.runtime import configure_logging
 from support_agent.schemas.ticket import SupportTicketInput
 from support_agent.services.bootstrap import build_application
 
@@ -23,6 +23,7 @@ def main() -> None:
     ticket = SupportTicketInput.model_validate_json(args.ticket_file.read_text())
     app = build_application()
     last_state: dict[str, Any] | None = None
+    printed_trace_count = 0
 
     if not args.quiet:
         print(f"[start] ticket_id={ticket.ticket_id}")
@@ -33,13 +34,22 @@ def main() -> None:
         for node_name, node_state in update.items():
             if not args.quiet:
                 print(_format_node_update(node_name, node_state))
+                if isinstance(node_state, dict):
+                    trace = node_state.get("investigation_trace", [])
+                    if isinstance(trace, list):
+                        new_entries = trace[printed_trace_count:]
+                        for entry in new_entries:
+                            print(f"[thinking] {entry}")
+                        printed_trace_count = max(printed_trace_count, len(trace))
             if isinstance(node_state, dict):
                 last_state = node_state
 
     if last_state is None or "final_result" not in last_state:
         raise RuntimeError("Agent run completed without a final_result.")
 
-    print(json.dumps(last_state["final_result"].model_dump(mode="json"), indent=2))
+    final_payload = last_state["final_result"].model_dump(mode="json")
+    final_payload.pop("facts", None)
+    print(json.dumps(final_payload, indent=2))
 
 
 def _format_node_update(node_name: str, node_state: Any) -> str:
@@ -64,11 +74,9 @@ def _format_node_update(node_name: str, node_state: Any) -> str:
     if node_name == "run_tools":
         results = node_state.get("tool_results", [])
         tool_names = [item.get("name") for item in results if isinstance(item, dict)]
-        facts = redact_for_logging(node_state.get("facts", {}))
         clarifications = node_state.get("clarification_requests", [])
         return (
             f"[{node_name}] executed_tools={','.join(tool_names) or 'none'} "
-            f"facts={json.dumps(facts, default=str)[:280]} "
             f"clarifications={json.dumps(clarifications, default=str)}"
         )
     if node_name == "finalize":

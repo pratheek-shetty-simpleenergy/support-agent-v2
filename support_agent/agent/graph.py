@@ -19,7 +19,7 @@ from support_agent.agent.state import AgentState
 
 
 def build_support_graph(*, settings, llm_client, retriever, tool_registry):
-    deps = NodeDependencies(llm_client=llm_client, retriever=retriever, tool_registry=tool_registry)
+    deps = NodeDependencies(settings=settings, llm_client=llm_client, retriever=retriever, tool_registry=tool_registry)
     graph = StateGraph(AgentState)
 
     graph.add_node("load_ticket", load_ticket)

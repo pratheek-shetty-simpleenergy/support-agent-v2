@@ -34,12 +34,22 @@ def follow_up_rule_tools(state: AgentState, facts: dict[str, Any]) -> list[str]:
         if status == "DELIVERED" and state.get("order_id"):
             tools.append("get_ownership_record")
     if _is_mobile_vehicle_link_issue(state):
+        if state.get("user_id") and not isinstance(facts.get("related_orders"), list):
+            tools.append("search_related_orders")
         if state.get("order_id") and not facts.get("order_details"):
             tools.append("get_order_details")
         if state.get("user_id") and not facts.get("ownership_record"):
             tools.append("get_ownership_record")
-        if state.get("vehicle_id") and not facts.get("vehicle_details"):
+        if (state.get("vehicle_id") or state.get("vehicle_vin")) and not facts.get("vehicle_details"):
             tools.append("get_vehicle_details")
+        if state.get("vehicle_vin") and not facts.get("vehicle_last_seen"):
+            tools.append("get_vehicle_last_seen")
+        if _mobile_telematics_ready(state, facts) and not facts.get("telematics_status"):
+            tools.append("get_telematics_signal_summary")
+        if _mobile_telematics_ready(state, facts) and not facts.get("trip_history_status"):
+            tools.append("get_trip_history_summary")
+        if _needs_charging_sync_diagnostics(state) and _mobile_telematics_ready(state, facts) and not facts.get("charging_history_status"):
+            tools.append("get_charging_history_summary")
     return _dedupe(tools)
 
 def order_candidates(facts: dict[str, Any]) -> list[dict[str, str]]:
@@ -128,6 +138,42 @@ def _should_fetch_order_candidates(state: AgentState, facts: dict[str, Any]) -> 
     has_related_orders = isinstance(facts.get("related_orders"), list)
     has_user_enquiries = isinstance(facts.get("user_enquiries"), list)
     return not (has_related_orders and has_user_enquiries)
+
+
+def _mobile_telematics_ready(state: AgentState, facts: dict[str, Any]) -> bool:
+    if not _is_mobile_vehicle_link_issue(state):
+        return False
+    user_profile = facts.get("user_profile", {}) if isinstance(facts.get("user_profile"), dict) else {}
+    ownership_record = facts.get("ownership_record", {}) if isinstance(facts.get("ownership_record"), dict) else {}
+    related_orders = facts.get("related_orders", []) if isinstance(facts.get("related_orders"), list) else []
+    primary_vin = user_profile.get("primary_vin")
+    ownership_vin = ownership_record.get("vin")
+    ownership_order_id = ownership_record.get("order_id")
+    delivered_order_ids = {
+        order.get("id")
+        for order in related_orders
+        if isinstance(order, dict) and str(order.get("status", "")).upper() == "DELIVERED" and order.get("id")
+    }
+    return bool(
+        state.get("vehicle_vin")
+        and primary_vin
+        and ownership_vin
+        and ownership_vin == primary_vin
+        and ownership_order_id
+        and ownership_order_id in delivered_order_ids
+    )
+
+
+def _needs_trip_sync_diagnostics(state: AgentState) -> bool:
+    raw_message = str(state.get("raw_user_message", "")).lower()
+    problem_type = str(state.get("problem_type", "")).lower()
+    return "trip" in raw_message or "ride" in raw_message or "trip" in problem_type
+
+
+def _needs_charging_sync_diagnostics(state: AgentState) -> bool:
+    raw_message = str(state.get("raw_user_message", "")).lower()
+    problem_type = str(state.get("problem_type", "")).lower()
+    return "charg" in raw_message or "charg" in problem_type
 
 
 def _string_or_empty(value: Any) -> str:
